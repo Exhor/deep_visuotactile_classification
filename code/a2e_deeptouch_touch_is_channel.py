@@ -16,7 +16,7 @@ from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation, Flatten
 from keras.layers import Conv2D, MaxPooling2D, SeparableConv2D
 
-def m2(input_shape, output_shape) -> keras.models.Sequential:
+def m2(input_shape, output_shape):
     model = Sequential()
     model.add(Conv2D(32, kernel_size=(3, 3),
                      activation='relu',
@@ -30,7 +30,7 @@ def m2(input_shape, output_shape) -> keras.models.Sequential:
     model.add(Dense(output_shape, activation='softmax'))
     return model
 
-def m1(input_shape, output_shape) -> keras.models.Sequential:
+def m1(input_shape, output_shape):
     model = Sequential()
 
     model.add(Conv2D(32, (3, 3), padding='valid',
