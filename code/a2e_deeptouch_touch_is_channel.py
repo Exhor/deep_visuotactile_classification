@@ -75,9 +75,9 @@ def folder2tacvector(folder, ntouches, centre, radius, width):
         print('Error. NANs in polar image')
     return c
 
-def run(test_on={1}, n_train=12, n_test = 10, epochs = 10):
+def run(test_on={1}, n_train=60, n_test = 10, epochs = 10):
     num_classes = 10
-    ntouches = 5
+    ntouches = 1
     centre = (214,214)
     radius = 205
     width = 100
@@ -131,7 +131,7 @@ def run(test_on={1}, n_train=12, n_test = 10, epochs = 10):
     x_train /= 255
     x_test /= 255
     
-    model = m1(input_shape = x_train.shape[1:],
+    model = m2(input_shape = x_train.shape[1:],
                output_shape=num_classes)
 
     # initiate optimizer
@@ -148,7 +148,7 @@ def run(test_on={1}, n_train=12, n_test = 10, epochs = 10):
               verbose=1,
               validation_data=(x_test, y_test)
               )
-    return model
+    return model, x_test, y_test
 
 if __name__ == '__main__':
     model = run()
