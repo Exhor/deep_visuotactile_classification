@@ -34,24 +34,27 @@ def m5_dae(input_shape):
     model.compile(optimizer='adadelta', loss='binary_crossentropy')
     return model
 
-def m4_dcae(input_shape):
+def m4_dcae(input_shape, filters=(16,8,4,1)):
+    f = filters
     input_img = Input(shape=input_shape)
-    x = Conv2D(32, (3, 3), activation='relu', padding='same')(input_img)
+    x = Conv2D(f[0], (3, 3), activation='relu', padding='same')(input_img)
     x = MaxPooling2D(pool_size=(2, 2))(x)
-    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
+    x = Conv2D(f[1], (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D(pool_size=(2, 2))(x)
-    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
+    x = Conv2D(f[2], (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D(pool_size=(2, 2))(x)
-    x = Conv2D(1, (3, 3), activation='relu', padding='same')(x)
+    x = Conv2D(f[3], (3, 3), activation='relu', padding='same')(x)
     encoded = MaxPooling2D(pool_size=(2, 2), padding='same', name='encoded')(x)
 
-    x = Conv2D(16, (3, 3), activation='relu', padding='same')(encoded)
+    #encoded = Dense(20, activation='sigmoid')(x)
+
+    x = Conv2D(f[3], (3, 3), activation='relu', padding='same')(encoded)
     x = UpSampling2D((2, 2))(x)
-    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
+    x = Conv2D(f[2], (3, 3), activation='relu', padding='same')(x)
     x = UpSampling2D((2, 2))(x)
-    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
+    x = Conv2D(f[1], (3, 3), activation='relu', padding='same')(x)
     x = UpSampling2D((2, 2))(x)
-    x = Conv2D(32, (3, 3), activation='relu', padding='same')(x)
+    x = Conv2D(f[0], (3, 3), activation='relu', padding='same')(x)
     x = UpSampling2D((2, 2))(x)
     decoded = Conv2D(1, (3, 3), activation='sigmoid', padding='same')(x)
 
@@ -226,26 +229,46 @@ def plot_recoded(encoder, xte, width):
         ax.get_yaxis().set_visible(False)
     plt.show()
 
+def save_model(m, path):
+    m_json = m.to_json()
+    with open(path+'.json', 'w') as jfile:
+        jfile.write(m_json)
+    m.save_weights(path+'h5')
+
+from keras.models import model_from_json
+
+def load_model(path):
+    jfile = open(path+'.json','r')
+    mjson = jfile.read()
+    jfile.close()
+    m = model_from_json(mjson)
+    m.load_weights(path+'h5')
+    return m
+
 if __name__ == '__main__':
-    ntouches = 5
-    xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=ntouches)
+
+    xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=1)
 
     # pretraining
-    cname = 'cache/m5_dae_enc_6_6'
+    filters = (20,15,6,3)
+    cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60' % filters
     recalc = False
     #from keras.callbacks import TensorBoard
     if recalc:
-        encoder = m4_dcae(xtr[0].shape[1:])
+        encoder = m4_dcae(xtr[0].shape[1:], filters)
+        encoder.fit(xtr[0], xtr[0], epochs=20, batch_size=60, validation_data=(xte[0],xte[0]))
         encoder.save(cname)
     else:
         encoder = keras.models.load_model(cname)
-    #plot_recoded(encoder, xte)
+    plot_recoded(encoder, xte, width=96)
 
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
 
-    xtr_enc = np.array(f.predict(xtr[i]) for i in range(ntouches))
-    xte_enc = np.array(f.predict(xte[i]) for i in range(ntouches))
+    ntouches = 5
+    xtr, ytr, xte, yte = vt60_touchdata(n_train=12, ntouches=ntouches)
+    xtr_enc = np.concatenate([f.predict(xtr[i]) for i in range(ntouches)], axis=1)
+    xte_enc = np.concatenate([f.predict(xte[i]) for i in range(ntouches)], axis=1)
 
     xin = Input(shape=xtr_enc.shape[1:])
     x = Flatten()(xin)
@@ -258,6 +281,7 @@ if __name__ == '__main__':
     m = Model(xin, xout)
     m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
     m.fit(xtr_enc, ytr, epochs=100, batch_size=60, validation_data=(xte_enc,yte))
+
 
 
     # model = m3_deepfusion(input_shape = x_train[0].shape[1:],
