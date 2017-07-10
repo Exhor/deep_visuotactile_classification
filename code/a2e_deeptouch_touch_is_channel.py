@@ -13,12 +13,26 @@ import keras
 from keras.datasets import cifar10
 from keras.preprocessing.image import ImageDataGenerator
 from keras.models import Sequential, Model
-from keras.layers import Dense, Dropout, Activation, Flatten, Input
+from keras.layers import Dense, Dropout, Activation, Flatten, Input, Reshape
 from keras.layers import Conv2D, MaxPooling2D, SeparableConv2D, Permute, UpSampling2D
-
+import theano
 
 #def m5_dae(input_shape):
 
+def m5_dae(input_shape):
+    input_img = Input(shape=input_shape)
+    x = Flatten()(input_img)
+    x = Dense(512, activation='relu')(x)
+    x = Dense(64, activation='relu')(x)
+    encoded = Dense(16, activation='relu', name='encoded')(x)
+
+    x = Dense(64, activation='relu')(encoded)
+    x = Dense(512, activation='relu')(x)
+    x = Dense(np.prod(input_shape), activation='sigmoid')(x)
+    decoded = Reshape(input_shape)(x)
+    model = Model(input_img, decoded)
+    model.compile(optimizer='adadelta', loss='binary_crossentropy')
+    return model
 
 def m4_dcae(input_shape):
     input_img = Input(shape=input_shape)
@@ -29,7 +43,7 @@ def m4_dcae(input_shape):
     x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D(pool_size=(2, 2))(x)
     x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
-    encoded = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
+    encoded = MaxPooling2D(pool_size=(2, 2), padding='same', name='encoded')(x)
 
     x = Conv2D(16, (3, 3), activation='relu', padding='same')(encoded)
     x = UpSampling2D((2, 2))(x)
@@ -43,6 +57,7 @@ def m4_dcae(input_shape):
 
     model = Model(input_img, decoded)
     model.compile(optimizer='adadelta', loss='binary_crossentropy')
+
     return model
 
 def m2(input_shape, output_shape):
@@ -132,9 +147,8 @@ def folder2tacvector(folder, ntouches, centre, radius, width):
         print('Error. NANs in polar image')
     return c
 
-def runit(test_on={1}, n_train=6, n_test = 10, epochs = 100):
+def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
     num_classes = 10
-    ntouches = 10
     centre = (214,214)
     radius = 205
     width = 96
@@ -190,31 +204,41 @@ def runit(test_on={1}, n_train=6, n_test = 10, epochs = 100):
 
     # reshape input to go into multi-net
     x_train = [np.expand_dims(x_train[:, :, :, i],axis=-1) for i in range(ntouches)]
-    x_test = [np.expand_dims(x_test[:, :, :, i],axis=-1) for i in range(ntouches)]
-
-    # pretraining
-    from keras.callbacks import TensorBoard
-    model = m4_dcae(x_train[0].shape[1:])
-    model.fit(x_train[0], x_train[0], epochs=50, batch_size=60, shuffle=True,
-           validation_data=(x_test[0],x_test[0]),
-           callbacks=[TensorBoard(log_dir='/tmp/autoencoder')])
-
-    # model = m3_deepfusion(input_shape = x_train[0].shape[1:],
-    #                       output_shape=num_classes,
-    #                       ntouches=ntouches)
-    
-
-
-    # model.fit(x_train, y_train,
-    #           batch_size=batch_size,
-    #           epochs=epochs,
-    #           verbose=1,
-    #           validation_data=(x_test, y_test)
-    #           )
-    return model, x_train, y_train, x_test, y_test
+    x_test = [np.expand_dims(x_test[:, :, :, i],axis=-1) for i in range(ntouches)]    # pretraining
+    return x_train, y_train, x_test, y_test
 
 if __name__ == '__main__':
     #ae = m4_dcae((96,96,1))
     #ae.summary()
-    model, xtr, ytr, xte, yte = runit()
-    print('a')
+    xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=1)
+
+    # pretraining
+    from keras.callbacks import TensorBoard
+    encoder = m4_dcae(xtr[0].shape[1:])
+    encoder.fit(xtr[0], xtr[0], epochs=50, batch_size=60, shuffle=True,
+           validation_data=(xte[0],xte[0]),
+           callbacks=[TensorBoard(log_dir='/tmp/autoencoder')])
+    encoder.save('cache/m4_dcae')
+    # Plot imgs passed through autoenc.
+    recoded_imgs = model.predict(xte[0])
+    n = 10  # how many digits we will display
+    plt.figure(figsize=(20, 4))
+    for i in range(n):
+        # display original
+        ax = plt.subplot(2, n, i + 1)
+        plt.imshow(xte[0][i].reshape(96, 96))
+        plt.gray()
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+
+        # display reconstruction
+        ax = plt.subplot(2, n, i + 1 + n)
+        plt.imshow(recoded_imgs[i].reshape(96, 96))
+        plt.gray()
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+    plt.show()
+
+    # model = m3_deepfusion(input_shape = x_train[0].shape[1:],
+    #                       output_shape=num_classes,
+    #                       ntouches=ntouches)
