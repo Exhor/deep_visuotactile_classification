@@ -42,7 +42,7 @@ def m4_dcae(input_shape):
     x = MaxPooling2D(pool_size=(2, 2))(x)
     x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D(pool_size=(2, 2))(x)
-    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
+    x = Conv2D(1, (3, 3), activation='relu', padding='same')(x)
     encoded = MaxPooling2D(pool_size=(2, 2), padding='same', name='encoded')(x)
 
     x = Conv2D(16, (3, 3), activation='relu', padding='same')(encoded)
@@ -97,7 +97,6 @@ def m3_deepfusion(input_shape, output_shape, ntouches):
     model = Model(inputs=tin,outputs=[out])
     model.compile(optimizer='adadelta', loss='binary_crossentropy')
     return model
-
 
 def m1(input_shape, output_shape):
     model = Sequential()
@@ -207,37 +206,59 @@ def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
     x_test = [np.expand_dims(x_test[:, :, :, i],axis=-1) for i in range(ntouches)]    # pretraining
     return x_train, y_train, x_test, y_test
 
-if __name__ == '__main__':
-    #ae = m4_dcae((96,96,1))
-    #ae.summary()
-    xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=1)
-
-    # pretraining
-    from keras.callbacks import TensorBoard
-    encoder = m4_dcae(xtr[0].shape[1:])
-    encoder.fit(xtr[0], xtr[0], epochs=50, batch_size=60, shuffle=True,
-           validation_data=(xte[0],xte[0]),
-           callbacks=[TensorBoard(log_dir='/tmp/autoencoder')])
-    encoder.save('cache/m4_dcae')
-    # Plot imgs passed through autoenc.
-    recoded_imgs = model.predict(xte[0])
+def plot_recoded(encoder, xte, width):
+    recoded_imgs = encoder.predict(xte[0])
     n = 10  # how many digits we will display
     plt.figure(figsize=(20, 4))
     for i in range(n):
         # display original
         ax = plt.subplot(2, n, i + 1)
-        plt.imshow(xte[0][i].reshape(96, 96))
+        plt.imshow(xte[0][i].reshape(width, width))
         plt.gray()
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
 
         # display reconstruction
         ax = plt.subplot(2, n, i + 1 + n)
-        plt.imshow(recoded_imgs[i].reshape(96, 96))
+        plt.imshow(recoded_imgs[i].reshape(width, width))
         plt.gray()
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
     plt.show()
+
+if __name__ == '__main__':
+    ntouches = 5
+    xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=ntouches)
+
+    # pretraining
+    cname = 'cache/m5_dae_enc_6_6'
+    recalc = False
+    #from keras.callbacks import TensorBoard
+    if recalc:
+        encoder = m4_dcae(xtr[0].shape[1:])
+        encoder.save(cname)
+    else:
+        encoder = keras.models.load_model(cname)
+    #plot_recoded(encoder, xte)
+
+    # Train a model on the low level representations (encoded layer)
+    f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
+
+    xtr_enc = np.array(f.predict(xtr[i]) for i in range(ntouches))
+    xte_enc = np.array(f.predict(xte[i]) for i in range(ntouches))
+
+    xin = Input(shape=xtr_enc.shape[1:])
+    x = Flatten()(xin)
+    x = Dense(36, activation='relu')(x)
+    x = Dropout(0.25)(x)
+    x = Dense(36, activation='relu')(x)
+    x = Dropout(0.25)(x)
+    x = Dense(18, activation='relu')(x)
+    xout = Dense(10, activation='softmax')(x)
+    m = Model(xin, xout)
+    m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
+    m.fit(xtr_enc, ytr, epochs=100, batch_size=60, validation_data=(xte_enc,yte))
+
 
     # model = m3_deepfusion(input_shape = x_train[0].shape[1:],
     #                       output_shape=num_classes,
