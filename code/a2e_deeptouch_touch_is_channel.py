@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
-"""
-Tests for capitaliser
-"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from PIL import Image
 import cv2
-import os 
+import os
+#
+# gpu = False
+# if not gpu:
+#     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+#     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import keras
-from keras.datasets import cifar10
+
 from keras.preprocessing.image import ImageDataGenerator
 from keras.models import Sequential, Model
 from keras.layers import Dense, Dropout, Activation, Flatten, Input, Reshape
@@ -131,43 +134,115 @@ def m1(input_shape, output_shape):
 
     return model
 
-def folder2tacvector(folder, ntouches, centre, radius, width):
+def folder2tacvector(folder, ntouches, centre, radius, width, polarise=True):
     newcentre = (width/2, width/2)
     newradius = width/2-2
     c = np.zeros((ntouches, width, width))
     files = os.listdir(folder)
+    rsample = np.random.permutation(min(ntouches, len(files)))
     for i in range(ntouches):
-        path = folder + files[np.random.randint(len(files))]
+        path = folder + files[rsample[i]]
         img = Image.open(path).convert('L')
         img = img.crop([centre[0]-radius,centre[1]-radius,
                         centre[0]+radius,centre[1]+radius])
         img = img.resize((width, width))
         imgarray = np.array(img)
-        pol = cv2.linearPolar(imgarray, newcentre, newradius, flags=0)
-        c[i,:,:] = pol
+        if polarise:
+            imgarray = cv2.linearPolar(imgarray, newcentre, newradius, flags=0)
+
+        c[i,:,:] = imgarray
     if np.any(np.isnan(c)):
         print('Error. NANs in polar image')
     return c
 
-def vt60_touchdata(width=96, test_on={1}, n_train=60, n_samples_train=1,
-                   n_samples_test=1, n_test = 10, ntouches = 10, enc=lambda x:x):
-    num_classes = 10
-    centre = (214,214)
-    radius = 205
-    train_on = {1,2,3,4,5,6} - test_on
+def vt60_getparams(test_instances={1}):
+    train_instances = {1, 2, 3, 4, 5, 6} - test_instances
+    n_classes = 10
+    centre = np.array([214,214])
+    radius = 210
+
     vt60_touch = '/home/tadeo/a2/code/data/vt60/touch/'
     cpath = [p for p in os.listdir(vt60_touch) if os.path.isdir(vt60_touch+p)]
     folders_train = dict()
     folders_test = dict()
-    for objClass in range(num_classes):
-        for instance in train_on:
+    for objClass in range(n_classes):
+        for instance in train_instances:
             fpath = vt60_touch + cpath[objClass] + '/0' + str(instance) + '/'
             folders_train[objClass * 10 + instance] = fpath
-        for instance in test_on:
+        for instance in test_instances:
             fpath = vt60_touch + cpath[objClass] + '/0' + str(instance) + '/'
             folders_test[objClass * 10 + instance] = fpath
+    return centre, radius, n_classes, folders_train, folders_test
 
-    sample = enc(folder2tacvector(fpath, 1, centre, radius, width))
+def aug(filepath, nsamples, width, centre, radius, aug_shift):
+    r = lambda h : np.random.randint(low=-aug_shift//2, high=aug_shift//2+1, size=2)
+    c = centre + r(0) + r(0) # triangle distrib.
+    x = folder2tacvector(filepath, nsamples, c, radius, width, polarise=True)
+    return x
+
+def touch_gen(x, y, ntouches, augs_per_instance=1):
+    ''' Generates a pair x_train, y_train. Each pair has one sample per class per instance. A sample consists of
+    ntouches feature vectors concatenated. A feature vector is x[aug,classinstance,n,...]'''
+    if augs_per_instance > x.shape[0]:
+        print('Warning: requested more augs than available')
+        augs_per_instance = x.shape[0]
+    while 1:
+        augs = x.shape[0]
+        nsamples = x.shape[2]
+        rsample = np.random.permutation(nsamples)
+        raugs = np.random.permutation(augs)[:augs_per_instance]
+        xn = x[raugs][:,:,rsample[:ntouches]]
+        xn = xn.reshape((augs_per_instance*x.shape[1],) + xn.shape[2:])
+        yn = y[raugs,:,0]
+        yn = yn.reshape((augs_per_instance*x.shape[1],) + yn.shape[2:])
+        yield xn, yn
+
+def vt60_touch_augment_encode(width=96, test_instances={1}, n_train=60, n_test=10, ntouches=10, aug_shift=0, aug_factor=1,
+                              enc=lambda h: h, enc_dim=0):
+    if enc_dim==0:
+        enc_dim = (width, width)
+
+    centre, radius, num_classes, folders_train, folders_test = vt60_getparams(test_instances=test_instances)
+    radius -= aug_shift
+
+    # preprocess
+    n_train_instances = len(folders_train)
+    n_test_instances = len(folders_test)
+    x_train = np.zeros((aug_factor, n_train_instances, n_train,) + enc_dim)
+    y_train = np.zeros((aug_factor, n_train_instances, n_train, num_classes))
+    x_test = np.zeros((1, n_test_instances, n_test,) + enc_dim)
+    y_test = np.zeros((1, n_test_instances, n_test, num_classes))
+    i = 0
+    for tp in folders_train:
+        folder = folders_train[tp]
+        instance = tp % 10
+        objclass = tp // 10
+        for a in range(aug_factor):
+            x_train[a][i] = enc(aug(folder, n_train, width, centre, radius, aug_shift))
+            y_train[a][i] = np.tile(keras.utils.to_categorical(objclass, num_classes), (n_train,1))
+        i += 1
+    i = 0
+    for tp in folders_test:
+        folder = folders_test[tp]
+        instance = tp % 10
+        objclass = tp // 10
+        x_test[0][i] = enc(aug(folder, n_test, width, centre, radius, 0))
+        y_test[0][i] = np.tile(keras.utils.to_categorical(objclass, num_classes), (n_test,1))
+        i += 1
+
+    x_train = x_train.astype('float32')
+    x_test = x_test.astype('float32')
+    x_train /= 255
+    x_test /= 255
+
+    return x_train, y_train, x_test, y_test
+
+def vt60_touchdata(width=96, test_instances={1}, n_train=60, n_samples_train=1,
+                   n_samples_test=1, n_test = 10, ntouches = 10,
+                   enc=lambda x:x, aug_shift=0):
+    centre, radius, num_classes, folders_train, folders_test = vt60_getparams(test_instances=test_instances)
+
+    sample = enc(folder2tacvector(list(folders_train.values())[0], 1, centre, radius, width))
     enc_dims = sample.shape[1:]
 
     n = n_samples_train * len(folders_train)
@@ -177,10 +252,15 @@ def vt60_touchdata(width=96, test_on={1}, n_train=60, n_samples_train=1,
     n = n_samples_test * len(folders_test)
     x_test = np.zeros((n, ntouches,) + enc_dims)
     y_test = np.zeros(n)
+
+    #x_train_gen = touch_generator(folders_train, n_train, ntouches, aug_shift, enc)
+
     i = 0
     for objID in folders_train:
         folder = folders_train[objID]
-        x = enc(folder2tacvector(folder, n_train, centre, radius, width))
+        x = folder2tacvector(folder, n_train, centre, radius, width, polarise=False)
+
+
         for n in range(n_samples_train):
             x_sample = x[np.random.permutation(n_train)[:ntouches],:,:]
             x_train[i] = x_sample
@@ -251,31 +331,45 @@ def load_model(path):
     return m
 
 if __name__ == '__main__':
-    width = 48
-    xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, ntouches=1)
+
+    width = 96
+    test_instances = {1}
+    aug_shift = 10
+    ntouches = 1 # pretraining
+    xtr, ytr, xte, yte = vt60_touch_augment_encode(width=width, test_instances=test_instances, n_train=60, n_test=10,
+                                                   ntouches=ntouches, aug_shift=aug_shift, aug_factor=1, enc=lambda x: x, enc_dim=0)
+    tr_gen = touch_gen(xtr, ytr, ntouches)
+    te_gen = touch_gen(xte, yte, ntouches)
 
     # pretraining
-    filters = (20,15,6,3)
-    cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w48' % filters
+    filters = (32,32,16,16)
+    cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w%d' % (filters+(width,))
     recalc = False
     #from keras.callbacks import TensorBoard
     if recalc:
-        encoder = m4_dcae(xtr[0].shape[1:], filters)
-        encoder.fit(xtr[0], xtr[0], epochs=20, batch_size=60, validation_data=(xte[0],xte[0]))
+        encoder = m4_dcae(xtr.shape[-2:] + (1,), filters)
+        for i in range(2): # TODO: change to fit_generator when keras bugfix arrives
+            xtr_sample, ytr_sample = next(tr_gen)
+            xte_sample, yte_sample = next(te_gen)
+            x1 = np.expand_dims(xtr_sample, -1)
+            x2 = np.expand_dims(xte_sample, -1)
+            encoder.fit(x1, x1, batch_size=50, epochs=100, validation_data=(x2, x2))
+        #encoder.fit(xtr[0], xtr[0], epochs=20, batch_size=60, validation_data=(xte[0],xte[0]))
         encoder.save(cname)
     else:
         encoder = keras.models.load_model(cname)
-    plot_recoded(encoder, xte, width=width)
+    plot_recoded(encoder, np.expand_dims(xte[0],-1), width=width)
 
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
+    enc_dim = encoder.get_layer('encoded').output_shape[1:]
     enc = lambda imgs : f.predict(np.expand_dims(imgs,-1))
 
     ntouches = 5
-    xtr_enc, ytr, xte_enc, yte = vt60_touchdata(width=width, n_train=60, ntouches=ntouches,
-                                                n_samples_train=1000, n_samples_test=20, enc=enc)
-
-    xin = Input(shape=xtr_enc.shape[1:])
+    #xtr_enc, ytr, xte_enc, yte = vt60_touchdata(width=width, n_train=60, ntouches=ntouches,n_samples_train=1000, n_samples_test=20, enc=enc)
+    xtr, ytr, xte, yte = vt60_touch_augment_encode(width=width, test_instances=test_instances, n_train=60, n_test=10,
+                                                   ntouches=ntouches, aug_shift=aug_shift, aug_factor=5, enc=enc, enc_dim=enc_dim)
+    xin = Input(shape=xtr[:,0,0].shape)
     x = Flatten()(xin)
     x = Dense(64, activation='relu')(x)
     x = Dropout(0.25)(x)
@@ -285,10 +379,15 @@ if __name__ == '__main__':
     xout = Dense(10, activation='softmax')(x)
     m = Model(xin, xout)
     m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
-    m.fit(xtr_enc, ytr, epochs=20, batch_size=60, validation_data=(xte_enc,yte))
+
+    nsamples_per_instance = 3
+    tr_gen = touch_gen(xtr, ytr, ntouches, nsamples_per_instance)
+    te_gen = touch_gen(xte, yte, ntouches, nsamples_per_instance)
+
+    xtr_sample, ytr_sample = next(tr_gen)
+    xte_sample, yte_sample = next(te_gen)
+
+    m.fit(xtr_sample, ytr_sample, batch_size=50, epochs=100, validation_data=(xte_sample, yte_sample)) # TODO: rever to fit_generator if keras bugfixed SQL
 
 
 
-    # model = m3_deepfusion(input_shape = x_train[0].shape[1:],
-    #                       output_shape=num_classes,
-    #                       ntouches=ntouches)
