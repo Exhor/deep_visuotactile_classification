@@ -134,7 +134,7 @@ def m1(input_shape, output_shape):
 def folder2tacvector(folder, ntouches, centre, radius, width):
     newcentre = (width/2, width/2)
     newradius = width/2-2
-    c = np.zeros((width, width, ntouches))
+    c = np.zeros((ntouches, width, width))
     files = os.listdir(folder)
     for i in range(ntouches):
         path = folder + files[np.random.randint(len(files))]
@@ -144,16 +144,16 @@ def folder2tacvector(folder, ntouches, centre, radius, width):
         img = img.resize((width, width))
         imgarray = np.array(img)
         pol = cv2.linearPolar(imgarray, newcentre, newradius, flags=0)
-        c[:,:,i] = pol
+        c[i,:,:] = pol
     if np.any(np.isnan(c)):
         print('Error. NANs in polar image')
     return c
 
-def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
+def vt60_touchdata(width=96, test_on={1}, n_train=60, n_samples_train=1,
+                   n_samples_test=1, n_test = 10, ntouches = 10, enc=lambda x:x):
     num_classes = 10
     centre = (214,214)
     radius = 205
-    width = 96
     train_on = {1,2,3,4,5,6} - test_on
     vt60_touch = '/home/tadeo/a2/code/data/vt60/touch/'
     cpath = [p for p in os.listdir(vt60_touch) if os.path.isdir(vt60_touch+p)]
@@ -167,29 +167,34 @@ def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
             fpath = vt60_touch + cpath[objClass] + '/0' + str(instance) + '/'
             folders_test[objClass * 10 + instance] = fpath
 
-    x_train = np.zeros((n_train*len(folders_train), width, width, ntouches))
-    y_train = np.zeros(n_train*len(folders_train))
+    sample = enc(folder2tacvector(fpath, 1, centre, radius, width))
+    enc_dims = sample.shape[1:]
 
-    x_test = np.zeros((n_test*len(folders_test), width, width, ntouches))
-    y_test = np.zeros(n_test*len(folders_test))
+    n = n_samples_train * len(folders_train)
+    x_train = np.zeros((n, ntouches,) + enc_dims)
+    y_train = np.zeros(n)
+
+    n = n_samples_test * len(folders_test)
+    x_test = np.zeros((n, ntouches,) + enc_dims)
+    y_test = np.zeros(n)
     i = 0
     for objID in folders_train:
-        for n in range(n_train):
-            folder = folders_train[objID]
-            x = folder2tacvector(folder, ntouches, centre, radius, width)
-            x_train[i,:,:,:] = x
+        folder = folders_train[objID]
+        x = enc(folder2tacvector(folder, n_train, centre, radius, width))
+        for n in range(n_samples_train):
+            x_sample = x[np.random.permutation(n_train)[:ntouches],:,:]
+            x_train[i] = x_sample
             y_train[i] = objID // 10
             i += 1
     i = 0
     for objID in folders_test:
-        for n in range(n_test):
-            folder = folders_test[objID]
-            x = folder2tacvector(folder, ntouches, centre, radius, width)
-            x_test[i,:,:,:] = x
+        folder = folders_test[objID]
+        x = enc(folder2tacvector(folder, n_test, centre, radius, width))
+        for n in range(n_samples_test):
+            x_sample = x[np.random.permutation(n_test)[:ntouches],:,:]
+            x_test[i] = x_sample
             y_test[i] = objID // 10
             i += 1
-
-    batch_size = 30
     
     print('x_train shape:', x_train.shape)
     print(x_train.shape[0], 'train samples')
@@ -205,18 +210,18 @@ def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
     x_test /= 255
 
     # reshape input to go into multi-net
-    x_train = [np.expand_dims(x_train[:, :, :, i],axis=-1) for i in range(ntouches)]
-    x_test = [np.expand_dims(x_test[:, :, :, i],axis=-1) for i in range(ntouches)]    # pretraining
+    x_train = np.expand_dims(x_train,axis=-1)
+    x_test = np.expand_dims(x_test,axis=-1)
     return x_train, y_train, x_test, y_test
 
 def plot_recoded(encoder, xte, width):
-    recoded_imgs = encoder.predict(xte[0])
+    recoded_imgs = encoder.predict(xte[:,0,:,:])
     n = 10  # how many digits we will display
     plt.figure(figsize=(20, 4))
     for i in range(n):
         # display original
         ax = plt.subplot(2, n, i + 1)
-        plt.imshow(xte[0][i].reshape(width, width))
+        plt.imshow(xte[i, 0, :, :].reshape(width, width))
         plt.gray()
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
@@ -246,12 +251,12 @@ def load_model(path):
     return m
 
 if __name__ == '__main__':
-
-    xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=1)
+    width = 48
+    xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, ntouches=1)
 
     # pretraining
     filters = (20,15,6,3)
-    cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60' % filters
+    cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w48' % filters
     recalc = False
     #from keras.callbacks import TensorBoard
     if recalc:
@@ -260,27 +265,27 @@ if __name__ == '__main__':
         encoder.save(cname)
     else:
         encoder = keras.models.load_model(cname)
-    plot_recoded(encoder, xte, width=96)
+    plot_recoded(encoder, xte, width=width)
 
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
+    enc = lambda imgs : f.predict(np.expand_dims(imgs,-1))
 
     ntouches = 5
-    xtr, ytr, xte, yte = vt60_touchdata(n_train=12, ntouches=ntouches)
-    xtr_enc = np.concatenate([f.predict(xtr[i]) for i in range(ntouches)], axis=1)
-    xte_enc = np.concatenate([f.predict(xte[i]) for i in range(ntouches)], axis=1)
+    xtr_enc, ytr, xte_enc, yte = vt60_touchdata(width=width, n_train=60, ntouches=ntouches,
+                                                n_samples_train=1000, n_samples_test=20, enc=enc)
 
     xin = Input(shape=xtr_enc.shape[1:])
     x = Flatten()(xin)
-    x = Dense(36, activation='relu')(x)
+    x = Dense(64, activation='relu')(x)
     x = Dropout(0.25)(x)
-    x = Dense(36, activation='relu')(x)
+    x = Dense(32, activation='relu')(x)
     x = Dropout(0.25)(x)
-    x = Dense(18, activation='relu')(x)
+    x = Dense(16, activation='relu')(x)
     xout = Dense(10, activation='softmax')(x)
     m = Model(xin, xout)
     m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
-    m.fit(xtr_enc, ytr, epochs=100, batch_size=60, validation_data=(xte_enc,yte))
+    m.fit(xtr_enc, ytr, epochs=20, batch_size=60, validation_data=(xte_enc,yte))
 
 
 
