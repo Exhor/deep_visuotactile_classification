@@ -17,7 +17,61 @@ from keras.layers import Dense, Dropout, Activation, Flatten, Input, Reshape
 from keras.layers import Conv2D, MaxPooling2D, SeparableConv2D, Permute, UpSampling2D
 import theano
 
-#def m5_dae(input_shape):
+# def m8_vtfusion(touchin_shape, visin_shape)
+    # # touch layer
+    #     x = Input(shape=input_shape)
+    #     tin += [x]
+    #     x = Conv2D(32, (3,3), activation='relu')(x)
+    #     x = MaxPooling2D(pool_size=(2, 2))(x)
+    #     x = Conv2D(32, (3,3), activation='relu')(x)
+    #     x = MaxPooling2D(pool_size=(2, 2))(x)
+    #     x = Dropout(0.25)(x)
+    #     touchnets += [x]
+    # x = keras.layers.concatenate(touchnets)
+    # x = Flatten()(x)
+    # x = Dense(50, activation='relu')(x)
+    # x = Dense(50, activation='relu')(x)
+    # x = Dropout(0.5)(x)
+    # out = Dense(output_shape, activation='softmax')(x)
+    # model = Model(inputs=tin,outputs=[out])
+    # model.compile(optimizer='adadelta', loss='binary_crossentropy')
+
+def m7_dcae_plus_dense(input_shape, filters):
+    ''' Various topologies (simplifications of this net) tested on 20touch set. This is best'''
+    f = filters
+    input_img = Input(shape=input_shape)
+    x = Conv2D(f[0], (3, 3), activation='relu', padding='same')(input_img)
+    x = MaxPooling2D(pool_size=(2, 2))(x)
+    x = Conv2D(f[1], (3, 3), activation='relu', padding='same')(x)
+    x = MaxPooling2D(pool_size=(2, 2))(x)
+    x = Conv2D(f[2], (3, 3), activation='relu', padding='same')(x)
+    x = MaxPooling2D(pool_size=(2, 2))(x)
+    x = Conv2D(f[3], (3, 3), activation='relu', padding='same')(x)
+    x = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
+    x = Flatten()(x)
+    x = Dense(36, activation='relu')(x)
+    x = Dropout(0.25)(x)
+    # x = Dense(36, activation='relu')(x)
+    # x = Dropout(0.25)(x)
+    x = Dense(18, activation='relu')(x)
+    xout = Dense(10, activation='softmax')(x)
+    m = Model(input_img, xout)
+    m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
+    return m
+
+
+def m6_dense(input_shape):
+    xin = Input(shape=input_shape)
+    x = Flatten()(xin)
+    x = Dense(36, activation='relu')(x)
+    x = Dropout(0.25)(x)
+    x = Dense(36, activation='relu')(x)
+    x = Dropout(0.25)(x)
+    x = Dense(18, activation='relu')(x)
+    xout = Dense(10, activation='softmax')(x)
+    m = Model(xin, xout)
+    m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
+    return m, xin, xout
 
 def m5_dae(input_shape):
     input_img = Input(shape=input_shape)
@@ -149,23 +203,24 @@ def folder2tacvector(files_allowed, ntouches, centre, radius, width, enc=lambda 
         print('Error. NANs in polar image')
     return c
 
-def vt60_touchdata(width = 96, test_on={1}, n_train=60, n_test = 10, n_touches = 10, n_samples_per_object=1, enc=lambda x:x, enc_dims=0):
+def vt60_touchdata(width = 96, test_on=[{1},{1},{1},{1},{1},{1},{1},{1},{1},{1}], n_train=60, n_test = 10, n_touches = 10, n_samples_per_object=1, enc=lambda x:x, enc_dims=0):
     if enc_dims==0:
         enc_dims = (width, width)
     num_classes = 10
     centre = (214,214)
     radius = 205
 
-    train_on = {1,2,3,4,5,6} - test_on
+
     vt60_touch = '/home/tadeo/a2/code/data/vt60/touch/'
     cpath = [p for p in os.listdir(vt60_touch) if os.path.isdir(vt60_touch+p)]
     folders_train = dict()
     folders_test = dict()
     for objClass in range(num_classes):
+        train_on = {1, 2, 3, 4, 5, 6} - test_on[objClass]
         for instance in train_on:
             fpath = vt60_touch + cpath[objClass] + '/0' + str(instance) + '/'
             folders_train[objClass * 10 + instance] = fpath
-        for instance in test_on:
+        for instance in test_on[objClass]:
             fpath = vt60_touch + cpath[objClass] + '/0' + str(instance) + '/'
             folders_test[objClass * 10 + instance] = fpath
 
@@ -239,18 +294,7 @@ def load_model(path):
     return m
 
 
-def m6_dense(input_shape):
-    xin = Input(shape=input_shape)
-    x = Flatten()(xin)
-    x = Dense(36, activation='relu')(x)
-    x = Dropout(0.25)(x)
-    x = Dense(36, activation='relu')(x)
-    x = Dropout(0.25)(x)
-    x = Dense(18, activation='relu')(x)
-    xout = Dense(10, activation='softmax')(x)
-    m = Model(xin, xout)
-    m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
-    return m
+
 
 from sklearn.metrics import confusion_matrix
 
@@ -275,7 +319,7 @@ if __name__ == '__main__':
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
     encode = lambda img: f.predict(np.expand_dims(np.expand_dims(img, axis=0), axis=-1))
-    acc = np.zeros((20, 20))
+    acc = np.zeros((21, 21))
     for ntouches in [2,3,5,8,11,15,20]:
     #ntouches = 3
         xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, n_touches=ntouches, n_samples_per_object=20, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
@@ -290,3 +334,4 @@ if __name__ == '__main__':
             acc[ntouches, k] = np.trace(q) / sum(q.flatten())
 
         print(k, '#### mu=', np.mean(acc[ntouches]), '  sd=', np.std(acc[ntouches]))
+    np.save('cache/accs_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w%d_ntouches_2to15' % (filters + (width,)), acc)
