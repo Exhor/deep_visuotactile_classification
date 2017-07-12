@@ -174,7 +174,7 @@ def vt60_getparams(test_instances={1}):
             folders_test[objClass * 10 + instance] = fpath
     return centre, radius, n_classes, folders_train, folders_test
 
-def aug(filepath, nsamples, width, centre, radius, aug_shift):
+def augment(filepath, nsamples, width, centre, radius, aug_shift):
     r = lambda h : np.random.randint(low=-aug_shift//2, high=aug_shift//2+1, size=2)
     c = centre + r(0) + r(0) # triangle distrib.
     x = folder2tacvector(filepath, nsamples, c, radius, width, polarise=True)
@@ -197,7 +197,7 @@ def touch_gen(x, y, ntouches, augs_per_instance=1):
         yn = yn.reshape((augs_per_instance*x.shape[1],) + yn.shape[2:])
         yield xn, yn
 
-def vt60_touch_augment_encode(width=96, test_instances={1}, n_train=60, n_test=10, ntouches=10, aug_shift=0, aug_factor=1,
+def vt60_touch_augment_encode(width=96, test_instances={1}, n_train=60, n_test=10, aug_shift=0, aug_factor=1,
                               enc=lambda h: h, enc_dim=0):
     if enc_dim==0:
         enc_dim = (width, width)
@@ -218,7 +218,7 @@ def vt60_touch_augment_encode(width=96, test_instances={1}, n_train=60, n_test=1
         instance = tp % 10
         objclass = tp // 10
         for a in range(aug_factor):
-            x_train[a][i] = enc(aug(folder, n_train, width, centre, radius, aug_shift))
+            x_train[a][i] = enc(augment(folder, n_train, width, centre, radius, aug_shift))
             y_train[a][i] = np.tile(keras.utils.to_categorical(objclass, num_classes), (n_train,1))
         i += 1
     i = 0
@@ -226,7 +226,7 @@ def vt60_touch_augment_encode(width=96, test_instances={1}, n_train=60, n_test=1
         folder = folders_test[tp]
         instance = tp % 10
         objclass = tp // 10
-        x_test[0][i] = enc(aug(folder, n_test, width, centre, radius, 0))
+        x_test[0][i] = enc(augment(folder, n_test, width, centre, radius, 0))
         y_test[0][i] = np.tile(keras.utils.to_categorical(objclass, num_classes), (n_test,1))
         i += 1
 
@@ -295,13 +295,13 @@ def vt60_touchdata(width=96, test_instances={1}, n_train=60, n_samples_train=1,
     return x_train, y_train, x_test, y_test
 
 def plot_recoded(encoder, xte, width):
-    recoded_imgs = encoder.predict(xte[:,0,:,:])
     n = 10  # how many digits we will display
+    recoded_imgs = encoder.predict(xte[:n])
     plt.figure(figsize=(20, 4))
     for i in range(n):
         # display original
         ax = plt.subplot(2, n, i + 1)
-        plt.imshow(xte[i, 0, :, :].reshape(width, width))
+        plt.imshow(xte[i].reshape(width, width))
         plt.gray()
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
@@ -331,45 +331,41 @@ def load_model(path):
     return m
 
 if __name__ == '__main__':
-
-    width = 96
+    n_classes = 10
+    n_instances = 6
+    width = 48
     test_instances = {1}
     aug_shift = 10
     ntouches = 1 # pretraining
     xtr, ytr, xte, yte = vt60_touch_augment_encode(width=width, test_instances=test_instances, n_train=60, n_test=10,
-                                                   ntouches=ntouches, aug_shift=aug_shift, aug_factor=1, enc=lambda x: x, enc_dim=0)
-    tr_gen = touch_gen(xtr, ytr, ntouches)
-    te_gen = touch_gen(xte, yte, ntouches)
-
+                                                   aug_shift=aug_shift, aug_factor=1, enc=lambda x: x, enc_dim=0)
     # pretraining
     filters = (32,32,16,16)
     cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w%d' % (filters+(width,))
-    recalc = False
-    #from keras.callbacks import TensorBoard
+    recalc = True
     if recalc:
         encoder = m4_dcae(xtr.shape[-2:] + (1,), filters)
-        for i in range(2): # TODO: change to fit_generator when keras bugfix arrives
-            xtr_sample, ytr_sample = next(tr_gen)
-            xte_sample, yte_sample = next(te_gen)
-            x1 = np.expand_dims(xtr_sample, -1)
-            x2 = np.expand_dims(xte_sample, -1)
-            encoder.fit(x1, x1, batch_size=50, epochs=100, validation_data=(x2, x2))
+        xtr_flat = np.expand_dims(np.reshape(xtr, (np.prod(xtr.shape[:3]),) + xtr.shape[3:]), -1)
+        xte_flat = np.expand_dims(np.reshape(xte, (np.prod(xte.shape[:3]),) + xte.shape[3:]), -1)
+        #ytr_flat = np.reshape(ytr, (np.prod(xtr.shape[:3]), n_classes))
+        #yte_flat = np.reshape(yte, (np.prod(xte.shape[:3]), n_classes))
+        encoder.fit(xtr_flat, xtr_flat, batch_size=50, epochs=200, validation_data=(xte_flat, xte_flat))
         #encoder.fit(xtr[0], xtr[0], epochs=20, batch_size=60, validation_data=(xte[0],xte[0]))
         encoder.save(cname)
     else:
         encoder = keras.models.load_model(cname)
-    plot_recoded(encoder, np.expand_dims(xte[0],-1), width=width)
+    plot_recoded(encoder, xte_flat, width=width)
 
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
     enc_dim = encoder.get_layer('encoded').output_shape[1:]
     enc = lambda imgs : f.predict(np.expand_dims(imgs,-1))
 
-    ntouches = 5
+    ntouches = 10
     #xtr_enc, ytr, xte_enc, yte = vt60_touchdata(width=width, n_train=60, ntouches=ntouches,n_samples_train=1000, n_samples_test=20, enc=enc)
-    xtr, ytr, xte, yte = vt60_touch_augment_encode(width=width, test_instances=test_instances, n_train=60, n_test=10,
-                                                   ntouches=ntouches, aug_shift=aug_shift, aug_factor=5, enc=enc, enc_dim=enc_dim)
-    xin = Input(shape=xtr[:,0,0].shape)
+    xtr, ytr, xte, yte = vt60_touch_augment_encode(width=width, test_instances=test_instances, n_train=60, n_test=60,
+                                                   aug_shift=aug_shift, aug_factor=100, enc=enc, enc_dim=enc_dim)
+    xin = Input(shape=(ntouches,)+xtr.shape[3:])
     x = Flatten()(xin)
     x = Dense(64, activation='relu')(x)
     x = Dropout(0.25)(x)
@@ -380,14 +376,17 @@ if __name__ == '__main__':
     m = Model(xin, xout)
     m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
 
-    nsamples_per_instance = 3
-    tr_gen = touch_gen(xtr, ytr, ntouches, nsamples_per_instance)
-    te_gen = touch_gen(xte, yte, ntouches, nsamples_per_instance)
+    trsample = np.random.permutation(xtr.shape[2])[:ntouches]
+    tesample = np.random.permutation(xte.shape[2])[:ntouches]
+    xtrc = xtr[:, :, trsample]
+    xtec = xte[:, :, tesample]
+    xtr_flat = xtrc.reshape((np.prod(xtrc.shape[:2]),) + xtrc.shape[2:])
+    xte_flat = xtec.reshape((np.prod(xtec.shape[:2]),) + xtec.shape[2:])
 
-    xtr_sample, ytr_sample = next(tr_gen)
-    xte_sample, yte_sample = next(te_gen)
+    ytr_flat = np.reshape(ytr[:, :, 0], (ytr.shape[0] * ytr.shape[1], n_classes))
+    yte_flat = np.reshape(yte[:, :, 0], (yte.shape[0] * yte.shape[1], n_classes))
 
-    m.fit(xtr_sample, ytr_sample, batch_size=50, epochs=100, validation_data=(xte_sample, yte_sample)) # TODO: rever to fit_generator if keras bugfixed SQL
+    m.fit(xtr_flat, ytr_flat, batch_size=10, epochs=20, validation_data=(xte_flat, yte_flat))
 
 
 
