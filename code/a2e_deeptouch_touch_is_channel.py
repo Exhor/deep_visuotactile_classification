@@ -131,10 +131,10 @@ def m1(input_shape, output_shape):
 
     return model
 
-def folder2tacvector(folder, ntouches, centre, radius, width):
+def folder2tacvector(folder, ntouches, centre, radius, width, enc=lambda x:x, enc_dims=0):
     newcentre = (width/2, width/2)
     newradius = width/2-2
-    c = np.zeros((width, width, ntouches))
+    c = np.zeros((ntouches,) + enc_dims)
     files = os.listdir(folder)
     for i in range(ntouches):
         path = folder + files[np.random.randint(len(files))]
@@ -144,16 +144,21 @@ def folder2tacvector(folder, ntouches, centre, radius, width):
         img = img.resize((width, width))
         imgarray = np.array(img)
         pol = cv2.linearPolar(imgarray, newcentre, newradius, flags=0)
-        c[:,:,i] = pol
+        c[i] = enc(pol)
     if np.any(np.isnan(c)):
         print('Error. NANs in polar image')
     return c
 
-def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
+def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10, enc=lambda x:x, enc_dims=0):
+    width = 96
+    r = 1
+    if enc_dims==0:
+        r = 255
+        enc_dims = (width, width)
     num_classes = 10
     centre = (214,214)
     radius = 205
-    width = 96
+
     train_on = {1,2,3,4,5,6} - test_on
     vt60_touch = '/home/tadeo/a2/code/data/vt60/touch/'
     cpath = [p for p in os.listdir(vt60_touch) if os.path.isdir(vt60_touch+p)]
@@ -167,29 +172,27 @@ def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
             fpath = vt60_touch + cpath[objClass] + '/0' + str(instance) + '/'
             folders_test[objClass * 10 + instance] = fpath
 
-    x_train = np.zeros((n_train*len(folders_train), width, width, ntouches))
+    x_train = np.zeros((n_train*len(folders_train), ntouches,) + enc_dims)
     y_train = np.zeros(n_train*len(folders_train))
 
-    x_test = np.zeros((n_test*len(folders_test), width, width, ntouches))
+    x_test = np.zeros((n_test*len(folders_test), ntouches,) + enc_dims)
     y_test = np.zeros(n_test*len(folders_test))
     i = 0
     for objID in folders_train:
         for n in range(n_train):
             folder = folders_train[objID]
-            x = folder2tacvector(folder, ntouches, centre, radius, width)
-            x_train[i,:,:,:] = x
+            x = folder2tacvector(folder, ntouches, centre, radius, width, enc, enc_dims)
+            x_train[i] = x
             y_train[i] = objID // 10
             i += 1
     i = 0
     for objID in folders_test:
         for n in range(n_test):
             folder = folders_test[objID]
-            x = folder2tacvector(folder, ntouches, centre, radius, width)
-            x_test[i,:,:,:] = x
+            x = folder2tacvector(folder, ntouches, centre, radius, width, enc, enc_dims)
+            x_test[i] = x
             y_test[i] = objID // 10
             i += 1
-
-    batch_size = 30
 
     print('x_train shape:', x_train.shape)
     print(x_train.shape[0], 'train samples')
@@ -201,12 +204,12 @@ def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10):
 
     x_train = x_train.astype('float32')
     x_test = x_test.astype('float32')
-    x_train /= 255
-    x_test /= 255
+    x_train /= r
+    x_test /= r
 
     # reshape input to go into multi-net
-    x_train = [np.expand_dims(x_train[:, :, :, i],axis=-1) for i in range(ntouches)]
-    x_test = [np.expand_dims(x_test[:, :, :, i],axis=-1) for i in range(ntouches)]    # pretraining
+    # x_train = [np.expand_dims(x_train[:, :, :, i],axis=-1) for i in range(ntouches)]
+    # x_test = [np.expand_dims(x_test[:, :, :, i],axis=-1) for i in range(ntouches)]    # pretraining
     return x_train, y_train, x_test, y_test
 
 def plot_recoded(encoder, xte, width):
@@ -246,31 +249,31 @@ def load_model(path):
     return m
 
 if __name__ == '__main__':
-
-    xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=1)
-
     # pretraining
-    filters = (20,15,6,3)
+    filters = (32,16,8,4)
     cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60' % filters
     recalc = False
     #from keras.callbacks import TensorBoard
     if recalc:
+        xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=1)
         encoder = m4_dcae(xtr[0].shape[1:], filters)
-        encoder.fit(xtr[0], xtr[0], epochs=20, batch_size=60, validation_data=(xte[0],xte[0]))
+        encoder.fit(xtr[0], xtr[0], epochs=10, batch_size=60, validation_data=(xte[0],xte[0]))
         encoder.save(cname)
+        plot_recoded(encoder, xte, width=96)
     else:
         encoder = keras.models.load_model(cname)
-    plot_recoded(encoder, xte, width=96)
+
 
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
+    encode = lambda img: f.predict(np.expand_dims(np.expand_dims(img, axis=0), axis=-1))
 
     ntouches = 5
-    xtr, ytr, xte, yte = vt60_touchdata(n_train=12, ntouches=ntouches)
-    xtr_enc = np.concatenate([f.predict(xtr[i]) for i in range(ntouches)], axis=1)
-    xte_enc = np.concatenate([f.predict(xte[i]) for i in range(ntouches)], axis=1)
+    xtr, ytr, xte, yte = vt60_touchdata(n_train=12, ntouches=ntouches, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
+    # xtr_enc = np.swapaxes([f.predict(xtr[:,i,:,:,0]) for i in range(ntouches)],axis1=0,axis2=1)
+    # xte_enc = np.swapaxes([f.predict(xte[:,i,:,:,0]) for i in range(ntouches)],axis1=0,axis2=1)
 
-    xin = Input(shape=xtr_enc.shape[1:])
+    xin = Input(shape=xtr.shape[1:])
     x = Flatten()(xin)
     x = Dense(36, activation='relu')(x)
     x = Dropout(0.25)(x)
@@ -280,7 +283,7 @@ if __name__ == '__main__':
     xout = Dense(10, activation='softmax')(x)
     m = Model(xin, xout)
     m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
-    m.fit(xtr_enc, ytr, epochs=100, batch_size=60, validation_data=(xte_enc,yte))
+    m.fit(xtr, ytr, epochs=2, batch_size=60, validation_data=(xte,yte))
 
 
 
