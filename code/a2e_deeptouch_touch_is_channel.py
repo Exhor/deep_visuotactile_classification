@@ -131,13 +131,13 @@ def m1(input_shape, output_shape):
 
     return model
 
-def folder2tacvector(folder, ntouches, centre, radius, width, enc=lambda x:x, enc_dims=0):
+def folder2tacvector(files_allowed, ntouches, centre, radius, width, enc=lambda x:x, enc_dims=0):
     newcentre = (width/2, width/2)
     newradius = width/2-2
     c = np.zeros((ntouches,) + enc_dims)
-    files = os.listdir(folder)
+    #files = os.listdir(folder)
     for i in range(ntouches):
-        path = folder + files[np.random.randint(len(files))]
+        path = files_allowed[np.random.randint(len(files_allowed))]
         img = Image.open(path).convert('L')
         img = img.crop([centre[0]-radius,centre[1]-radius,
                         centre[0]+radius,centre[1]+radius])
@@ -149,7 +149,9 @@ def folder2tacvector(folder, ntouches, centre, radius, width, enc=lambda x:x, en
         print('Error. NANs in polar image')
     return c
 
-def vt60_touchdata(width = 96, test_on={1}, n_train=6, n_test = 10, ntouches = 10, enc=lambda x:x, enc_dims=0):
+def vt60_touchdata(width = 96, test_on={1}, n_train=60, n_test = 10, n_touches = 10, n_samples_per_object=1, enc=lambda x:x, enc_dims=0):
+    if enc_dims==0:
+        enc_dims = (width, width)
     num_classes = 10
     centre = (214,214)
     radius = 205
@@ -167,24 +169,26 @@ def vt60_touchdata(width = 96, test_on={1}, n_train=6, n_test = 10, ntouches = 1
             fpath = vt60_touch + cpath[objClass] + '/0' + str(instance) + '/'
             folders_test[objClass * 10 + instance] = fpath
 
-    x_train = np.zeros((n_train*len(folders_train), ntouches,) + enc_dims)
-    y_train = np.zeros((n_train*len(folders_train), num_classes))
+    x_train = np.zeros((n_samples_per_object*len(folders_train), n_touches,) + enc_dims)
+    y_train = np.zeros((n_samples_per_object*len(folders_train), num_classes))
 
-    x_test = np.zeros((n_test*len(folders_test), ntouches,) + enc_dims)
-    y_test = np.zeros((n_test*len(folders_test), num_classes))
+    x_test = np.zeros((n_samples_per_object*len(folders_test), n_touches,) + enc_dims)
+    y_test = np.zeros((n_samples_per_object*len(folders_test), num_classes))
     i = 0
     for objID in folders_train:
-        for n in range(n_train):
+        for n in range(n_samples_per_object):
             folder = folders_train[objID]
-            x = folder2tacvector(folder, ntouches, centre, radius, width, enc, enc_dims)
+            files_allowed = [folder + f for f in os.listdir(folder)[:n_train]] # TODO: use only first 60? Randomise?
+            x = folder2tacvector(files_allowed, n_touches, centre, radius, width, enc, enc_dims)
             x_train[i] = x
             y_train[i] = keras.utils.to_categorical(objID // 10, num_classes)
             i += 1
     i = 0
     for objID in folders_test:
-        for n in range(n_test):
+        for n in range(n_samples_per_object):
             folder = folders_test[objID]
-            x = folder2tacvector(folder, ntouches, centre, radius, width, enc, enc_dims)
+            files_allowed = [folder + f for f in os.listdir(folder)[:n_test]]  # TODO: use only first 60? Randomise?
+            x = folder2tacvector(files_allowed, n_touches, centre, radius, width, enc, enc_dims)
             x_test[i] = x
             y_test[i] = keras.utils.to_categorical(objID // 10, num_classes)
             i += 1
@@ -197,14 +201,15 @@ def vt60_touchdata(width = 96, test_on={1}, n_train=6, n_test = 10, ntouches = 1
     x_test = x_test.astype('float32')
     return x_train, y_train, x_test, y_test
 
-def plot_recoded(encoder, xte, width):
-    recoded_imgs = encoder.predict(xte[0])
+def plot_recoded(encoder, x, width):
+
     n = 10  # how many digits we will display
+    recoded_imgs = encoder.predict(x[:n])
     plt.figure(figsize=(20, 4))
     for i in range(n):
         # display original
         ax = plt.subplot(2, n, i + 1)
-        plt.imshow(xte[0][i].reshape(width, width))
+        plt.imshow(x[i].reshape(width, width))
         plt.gray()
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
@@ -247,30 +252,41 @@ def m6_dense(input_shape):
     m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
     return m
 
+from sklearn.metrics import confusion_matrix
 
 if __name__ == '__main__':
     # pretraining
-    filters = (32,32,16,16)
-    width = 96
+    filters = (32,16,8,4)
+    width = 48
     cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w%d' % (filters + (width,))
     recalc = False
     #from keras.callbacks import TensorBoard
     if recalc:
-        xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, ntouches=1)
-        encoder = m4_dcae(xtr[0].shape[1:], filters)
-        encoder.fit(xtr[0], xtr[0], epochs=10, batch_size=60, validation_data=(xte[0],xte[0]))
+        xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, n_touches=1, n_samples_per_object=60)
+        x1 = np.expand_dims(xtr[:, 0], -1)
+        x2 = np.expand_dims(xte[:, 0], -1)
+        encoder = m4_dcae(xtr.shape[2:] + (1,), filters)
+        encoder.fit(x1, x1, epochs=100, batch_size=60, validation_data=(x2,x2))
         encoder.save(cname)
-        plot_recoded(encoder, xte, width=96)
+        plot_recoded(encoder, x2, width=width)
     else:
         encoder = keras.models.load_model(cname)
-
 
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
     encode = lambda img: f.predict(np.expand_dims(np.expand_dims(img, axis=0), axis=-1))
-    ntouches = 5
-    xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=12, ntouches=ntouches, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
+    acc = np.zeros((20, 20))
+    for ntouches in [2,3,5,8,11,15,20]:
+    #ntouches = 3
+        xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, n_touches=ntouches, n_samples_per_object=20, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
 
-    m = m6_dense(input_shape=xtr.shape[1:])
+        cm = lambda a, b: confusion_matrix([np.argmax(h) for h in a], [np.argmax(h) for h in b])
 
-    m.fit(xtr, ytr, epochs=100, batch_size=60, validation_data=(xte,yte))
+        for k in range(20):
+            m = m6_dense(input_shape=xtr.shape[1:])
+            m.fit(xtr, ytr, epochs=100, batch_size=50, validation_data=(xte, yte), verbose=0)
+            q = cm(yte, m.predict(xte))
+            print(k, '   #', np.trace(q) / sum(q.flatten()))
+            acc[ntouches, k] = np.trace(q) / sum(q.flatten())
+
+        print(k, '#### mu=', np.mean(acc[ntouches]), '  sd=', np.std(acc[ntouches]))
