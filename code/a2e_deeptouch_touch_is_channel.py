@@ -144,17 +144,12 @@ def folder2tacvector(folder, ntouches, centre, radius, width, enc=lambda x:x, en
         img = img.resize((width, width))
         imgarray = np.array(img)
         pol = cv2.linearPolar(imgarray, newcentre, newradius, flags=0)
-        c[i] = enc(pol)
+        c[i] = enc(pol / 255)
     if np.any(np.isnan(c)):
         print('Error. NANs in polar image')
     return c
 
-def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10, enc=lambda x:x, enc_dims=0):
-    width = 96
-    r = 1
-    if enc_dims==0:
-        r = 255
-        enc_dims = (width, width)
+def vt60_touchdata(width = 96, test_on={1}, n_train=6, n_test = 10, ntouches = 10, enc=lambda x:x, enc_dims=0):
     num_classes = 10
     centre = (214,214)
     radius = 205
@@ -173,17 +168,17 @@ def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10, enc=lambd
             folders_test[objClass * 10 + instance] = fpath
 
     x_train = np.zeros((n_train*len(folders_train), ntouches,) + enc_dims)
-    y_train = np.zeros(n_train*len(folders_train))
+    y_train = np.zeros((n_train*len(folders_train), num_classes))
 
     x_test = np.zeros((n_test*len(folders_test), ntouches,) + enc_dims)
-    y_test = np.zeros(n_test*len(folders_test))
+    y_test = np.zeros((n_test*len(folders_test), num_classes))
     i = 0
     for objID in folders_train:
         for n in range(n_train):
             folder = folders_train[objID]
             x = folder2tacvector(folder, ntouches, centre, radius, width, enc, enc_dims)
             x_train[i] = x
-            y_train[i] = objID // 10
+            y_train[i] = keras.utils.to_categorical(objID // 10, num_classes)
             i += 1
     i = 0
     for objID in folders_test:
@@ -191,25 +186,15 @@ def vt60_touchdata(test_on={1}, n_train=6, n_test = 10, ntouches = 10, enc=lambd
             folder = folders_test[objID]
             x = folder2tacvector(folder, ntouches, centre, radius, width, enc, enc_dims)
             x_test[i] = x
-            y_test[i] = objID // 10
+            y_test[i] = keras.utils.to_categorical(objID // 10, num_classes)
             i += 1
 
     print('x_train shape:', x_train.shape)
     print(x_train.shape[0], 'train samples')
     print(x_test.shape[0], 'test samples')
 
-    # Convert class vectors to binary class matrices.
-    y_train = keras.utils.to_categorical(y_train, num_classes)
-    y_test = keras.utils.to_categorical(y_test, num_classes)
-
     x_train = x_train.astype('float32')
     x_test = x_test.astype('float32')
-    x_train /= r
-    x_test /= r
-
-    # reshape input to go into multi-net
-    # x_train = [np.expand_dims(x_train[:, :, :, i],axis=-1) for i in range(ntouches)]
-    # x_test = [np.expand_dims(x_test[:, :, :, i],axis=-1) for i in range(ntouches)]    # pretraining
     return x_train, y_train, x_test, y_test
 
 def plot_recoded(encoder, xte, width):
@@ -248,14 +233,30 @@ def load_model(path):
     m.load_weights(path+'h5')
     return m
 
+
+def m6_dense(input_shape):
+    xin = Input(shape=input_shape)
+    x = Flatten()(xin)
+    x = Dense(36, activation='relu')(x)
+    x = Dropout(0.25)(x)
+    x = Dense(36, activation='relu')(x)
+    x = Dropout(0.25)(x)
+    x = Dense(18, activation='relu')(x)
+    xout = Dense(10, activation='softmax')(x)
+    m = Model(xin, xout)
+    m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
+    return m
+
+
 if __name__ == '__main__':
     # pretraining
-    filters = (32,16,8,4)
-    cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60' % filters
+    filters = (32,32,16,16)
+    width = 96
+    cname = 'cache/m4_dcae_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w%d' % (filters + (width,))
     recalc = False
     #from keras.callbacks import TensorBoard
     if recalc:
-        xtr, ytr, xte, yte = vt60_touchdata(n_train=60, ntouches=1)
+        xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, ntouches=1)
         encoder = m4_dcae(xtr[0].shape[1:], filters)
         encoder.fit(xtr[0], xtr[0], epochs=10, batch_size=60, validation_data=(xte[0],xte[0]))
         encoder.save(cname)
@@ -267,26 +268,9 @@ if __name__ == '__main__':
     # Train a model on the low level representations (encoded layer)
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
     encode = lambda img: f.predict(np.expand_dims(np.expand_dims(img, axis=0), axis=-1))
-
     ntouches = 5
-    xtr, ytr, xte, yte = vt60_touchdata(n_train=12, ntouches=ntouches, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
-    # xtr_enc = np.swapaxes([f.predict(xtr[:,i,:,:,0]) for i in range(ntouches)],axis1=0,axis2=1)
-    # xte_enc = np.swapaxes([f.predict(xte[:,i,:,:,0]) for i in range(ntouches)],axis1=0,axis2=1)
+    xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=12, ntouches=ntouches, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
 
-    xin = Input(shape=xtr.shape[1:])
-    x = Flatten()(xin)
-    x = Dense(36, activation='relu')(x)
-    x = Dropout(0.25)(x)
-    x = Dense(36, activation='relu')(x)
-    x = Dropout(0.25)(x)
-    x = Dense(18, activation='relu')(x)
-    xout = Dense(10, activation='softmax')(x)
-    m = Model(xin, xout)
-    m.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
-    m.fit(xtr, ytr, epochs=2, batch_size=60, validation_data=(xte,yte))
+    m = m6_dense(input_shape=xtr.shape[1:])
 
-
-
-    # model = m3_deepfusion(input_shape = x_train[0].shape[1:],
-    #                       output_shape=num_classes,
-    #                       ntouches=ntouches)
+    m.fit(xtr, ytr, epochs=100, batch_size=60, validation_data=(xte,yte))
