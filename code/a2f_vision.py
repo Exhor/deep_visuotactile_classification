@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import scipy.io
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import tensorflow as tf
 import keras.backend.tensorflow_backend as ktf
@@ -18,7 +18,7 @@ def get_session():
     gpu_options = tf.GPUOptions(allow_growth=True)
     return tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
-def vt60_vision_data(width=100, encode=lambda x:x, encoded_dims=0):
+def vt60_vision_data(width=100, encode=lambda x:x, encoded_dims=0, blotch=False):
     n_labels = 10
     n_instances = 6
     n_imgs = 40
@@ -43,24 +43,31 @@ def vt60_vision_data(width=100, encode=lambda x:x, encoded_dims=0):
             for img in range(n_imgs):
                 print('.', end='')
                 pic = Image.open(instpath + paths[img]).resize((width, width))
+                if blotch:
+                    draw = ImageDraw.Draw(i)
+                    draw.ellipse((20, 20, 180, 180), fill='black', outline='black')
+
                 imarray = np.expand_dims(np.array(pic), axis=0)
                 v[label, instance, img] = encode(imarray)
     return v
 
-def split_by_instance(v, test_instance, validation_instance=-1):
-    n_labels, n_instances, n_imgs = v.shape[:3]
+def split_by_instance(v, test_instance, n_imgs_train, validation_instance=-1):
+    n_labels, n_instances, n_imgs_test = v.shape[:3]
+    assert(n_imgs_test >= n_imgs_train)
     fdim = v.shape[3:]
     reserved = 1
-    xtr = np.zeros((n_labels * (n_instances - reserved) * n_imgs,) + fdim)
-    ytr = np.zeros((n_labels * (n_instances - reserved) * n_imgs, n_labels))
-    xte = np.zeros((n_labels * 1 * n_imgs,) + fdim)
-    yte = np.zeros((n_labels * 1 * n_imgs, n_labels))
-    xva = np.zeros((n_labels * 1 * n_imgs,) + fdim)
-    yva = np.zeros((n_labels * 1 * n_imgs, n_labels))
+    if validation_instance > -1:
+        reserved = 2
+    xtr = np.zeros((n_labels * (n_instances - reserved) * n_imgs_train,) + fdim)
+    ytr = np.zeros((n_labels * (n_instances - reserved) * n_imgs_train, n_labels))
+    xte = np.zeros((n_labels * 1 * n_imgs_test,) + fdim)
+    yte = np.zeros((n_labels * 1 * n_imgs_test, n_labels))
+    xva = np.zeros((n_labels * 1 * n_imgs_test,) + fdim)
+    yva = np.zeros((n_labels * 1 * n_imgs_test, n_labels))
     itr, ite, iva = 0, 0, 0
     for label in range(n_labels):
         for inst in range(n_instances):
-            for imgid in range(n_imgs):
+            for imgid in range(n_imgs_test):
                 if inst == test_instance:
                     xte[ite] = v[label, inst, imgid]
                     yte[ite] = to_categorical(label, n_labels)
@@ -70,9 +77,10 @@ def split_by_instance(v, test_instance, validation_instance=-1):
                     yva[iva] = to_categorical(label, n_labels)
                     ite += 1
                 else:
-                    xtr[itr] = v[label, inst, imgid]
-                    ytr[itr] = to_categorical(label, n_labels)
-                    itr += 1
+                    if imgid < n_imgs_train:
+                        xtr[itr] = v[label, inst, imgid]
+                        ytr[itr] = to_categorical(label, n_labels)
+                        itr += 1
     # Shuffle data
     tri = np.random.permutation(xtr.shape[0])
     tei = np.random.permutation(xte.shape[0])
@@ -91,6 +99,8 @@ def m1_dense(inshape, optimiser='adadelta'):
     m.compile(optimizer=optimiser, loss=categorical_crossentropy, metrics=['accuracy'])
     return m
 
+from keras.callbacks import LambdaCallback
+
 if __name__ == '__main__':
     # ktf.set_session(get_session()) # GPU vram use: grow as needed instead of hogging all at start
     # base = VGG16(weights='imagenet')
@@ -99,30 +109,34 @@ if __name__ == '__main__':
     # v = vt60_vision_data(width = 224, encode=f, encoded_dims=(25088,))
     # np.save('cache/vision_vgg16_encoded.np', v)
     v = np.load('cache/vision_vgg16_encoded.np.npy')
-    cm = np.zeros((60,10)) # confusion matrix objid -> pred class
+
     optimiser = 'adadelta'
-    epochs = 50
-    print('Finetuning using %s' % optimiser)
-    n = 400 # number of test samples TODO: automate
-    ypred = np.zeros((6, n), dtype='uint8')
-    ytrue = np.zeros((6, n), dtype='uint8')
-    vprob = np.zeros((6, n, 10)) # p(c|v)
-    for test_instance in range(6):
-        xtr, ytr, xte, yte = split_by_instance(v, test_instance=test_instance)
-        # train
-        m = m1_dense(xtr.shape[1:], optimiser)
+    epochs = 20
+    n_testmigs = 40
+    for n_trainimgs in [40, 15, 8, 3]:
+        print('Finetuning VGG16 using %s. Training with %d images.' % (optimiser, n_trainimgs))
+        n_test = 10 * n_testmigs # number of test samples
+        cm = np.zeros((60, 10))  # confusion matrix objid -> pred class
+        ypred = np.zeros((6, n_test), dtype='uint8')
+        ytrue = np.zeros((6, n_test), dtype='uint8')
+        vprob = np.zeros((6, n_test, 10)) # p(c|v)
+        for test_instance in range(6):
+            xtr, ytr, xte, yte, xva, yva = split_by_instance(v, test_instance=test_instance, n_imgs_train=n_trainimgs)
 
-        m.fit(xtr, ytr, batch_size=40, epochs=epochs, shuffle=True, verbose=1, validation_split=0.1)
-        # test & record
-        vp = m.predict(xte)
-        vprob[test_instance] = vp
-        ypred[test_instance] = np.argmax(vp, axis=1)
-        ytrue[test_instance] = np.argmax(yte, axis=1)
-        print('Test accuracy for instance %d: %.3f' % (test_instance, np.mean(ypred[test_instance]==ytrue[test_instance])))
-        for i in range(n):
-            cm[ytrue[test_instance,i]*6 + test_instance, ypred[test_instance,i]] += 1
-        #np.save('cache/vision_vgg16_pred_true_instance_%d' % test_instance, (ypred, ytrue))
-    scipy.io.savemat('cache/vision_vgg16_256_32_%s_epochs_%d_pred_true_cm_pred_vprob.mat' % (optimiser, epochs),
-                     {'ypred':ypred, 'ytrue':ytrue, 'cm':cm, 'vprob':vprob})
+            # train
+            m = m1_dense(xtr.shape[1:], optimiser)
+            cb = LambdaCallback(on_epoch_end= lambda epoch,logs: print('tr_acc = ', logs.get('acc'), ' # val_acc = ', logs.get('val_acc'))) # show progress
+            m.fit(xtr, ytr, batch_size=40, epochs=epochs, shuffle=True, verbose=0, validation_split=0.1, callbacks=[cb])
+
+            # test & record
+            vp = m.predict(xte)
+            vprob[test_instance] = vp
+            ypred[test_instance] = np.argmax(vp, axis=1)
+            ytrue[test_instance] = np.argmax(yte, axis=1)
+            print()
+            print('Test accuracy for instance %d: %.3f' % (test_instance, np.mean(ypred[test_instance]==ytrue[test_instance])))
+            for i in range(n_test):
+                cm[ytrue[test_instance,i]*6 + test_instance, ypred[test_instance,i]] += 1
+            #np.save('cache/vision_vgg16_pred_true_instance_%d' % test_instance, (ypred, ytrue))
+        scipy.io.savemat('cache/vision_vgg16_256_32_%s_epochs_%d_ntrainv_%d_pred_true_cm_pred_vprob_blotched.mat' % (optimiser, epochs, n_trainimgs), {'ypred':ypred, 'ytrue':ytrue, 'cm':cm, 'vprob':vprob})
     #np.save('cache/vision_vgg16_cm', cm)
-
