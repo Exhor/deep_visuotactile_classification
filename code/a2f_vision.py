@@ -1,4 +1,5 @@
 import os
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io
 from PIL import Image, ImageDraw
@@ -41,11 +42,20 @@ def vt60_vision_data(width=100, encode=lambda x:x, encoded_dims=0, blotch=False)
             instpath = p + cfolder + '/0' + str(instance+1) + '/'
             paths = [x for x in os.listdir(instpath) if x[-4:] == '.jpg']
             for img in range(n_imgs):
-                print('.', end='')
+                #print('.', end='')
                 pic = Image.open(instpath + paths[img]).resize((width, width))
                 if blotch:
-                    draw = ImageDraw.Draw(i)
-                    draw.ellipse((20, 20, 180, 180), fill='black', outline='black')
+                    draw = ImageDraw.Draw(pic)
+                    a = 0.2 # pixels to cover
+                    while True:
+                        toblack = np.count_nonzero( np.sum(np.array(pic),axis=2) ) - (1-a) * pic.height * pic.width
+                        print(toblack)
+                        if toblack < 900:
+                            break
+                        radius = np.random.randint(10, 10+1.1*(toblack / 3.1416)**0.5)
+                        cx = np.random.randint(radius+2, pic.width-radius-1)
+                        cy = np.random.randint(radius+2, pic.height-radius-1)
+                        draw.ellipse((cx-radius, cy-radius, cx+radius, cy+radius), fill='black', outline='black')
 
                 imarray = np.expand_dims(np.array(pic), axis=0)
                 v[label, instance, img] = encode(imarray)
@@ -102,18 +112,19 @@ def m1_dense(inshape, optimiser='adadelta'):
 from keras.callbacks import LambdaCallback
 
 if __name__ == '__main__':
+    blotch = False
     # ktf.set_session(get_session()) # GPU vram use: grow as needed instead of hogging all at start
     # base = VGG16(weights='imagenet')
     # f_model = Model(inputs=base.input, outputs=base.get_layer('flatten').output)
     # f = lambda img : f_model.predict(preprocess_input(img.astype('float32')))
-    # v = vt60_vision_data(width = 224, encode=f, encoded_dims=(25088,))
-    # np.save('cache/vision_vgg16_encoded.np', v)
-    v = np.load('cache/vision_vgg16_encoded.np.npy')
+    # v = vt60_vision_data(width = 224, encode=f, encoded_dims=(25088,), blotch=blotch)
+    # np.save('cache/vision_vgg16_encoded' + '_blotched'*blotch, v)
+    v = np.load('cache/vision_vgg16_encoded' + '_blotched'*blotch + '.npy')
 
     optimiser = 'adadelta'
-    epochs = 20
+    epochs = 50
     n_testmigs = 40
-    for n_trainimgs in [40, 15, 8, 3]:
+    for n_trainimgs in [40, 30, 20, 15, 10, 8, 5, 3, 2, 1]:
         print('Finetuning VGG16 using %s. Training with %d images.' % (optimiser, n_trainimgs))
         n_test = 10 * n_testmigs # number of test samples
         cm = np.zeros((60, 10))  # confusion matrix objid -> pred class
@@ -138,5 +149,5 @@ if __name__ == '__main__':
             for i in range(n_test):
                 cm[ytrue[test_instance,i]*6 + test_instance, ypred[test_instance,i]] += 1
             #np.save('cache/vision_vgg16_pred_true_instance_%d' % test_instance, (ypred, ytrue))
-        scipy.io.savemat('cache/vision_vgg16_256_32_%s_epochs_%d_ntrainv_%d_pred_true_cm_pred_vprob_blotched.mat' % (optimiser, epochs, n_trainimgs), {'ypred':ypred, 'ytrue':ytrue, 'cm':cm, 'vprob':vprob})
+        scipy.io.savemat('cache/vision_vgg16_256_32_%s_epochs_%d_ntrainv_%d_pred_true_cm_pred_vprob%s.mat' % (optimiser, epochs, n_trainimgs, '_blotched'*blotch), {'ypred':ypred, 'ytrue':ytrue, 'cm':cm, 'vprob':vprob})
     #np.save('cache/vision_vgg16_cm', cm)
