@@ -190,8 +190,9 @@ def folder2tacvector(files_allowed, ntouches, centre, radius, width, enc=lambda 
     newradius = width/2-2
     c = np.zeros((ntouches,) + enc_dims)
     #files = os.listdir(folder)
+    rsample = np.random.permutation(len(files_allowed))
     for i in range(ntouches):
-        path = files_allowed[np.random.randint(len(files_allowed))]
+        path = files_allowed[rsample[i]]
         img = Image.open(path).convert('L')
         img = img.crop([centre[0]-radius,centre[1]-radius,
                         centre[0]+radius,centre[1]+radius])
@@ -226,9 +227,10 @@ def vt60_touchdata(width = 96, test_on=[{1},{1},{1},{1},{1},{1},{1},{1},{1},{1}]
 
     x_train = np.zeros((n_samples_per_object*len(folders_train), n_touches,) + enc_dims)
     y_train = np.zeros((n_samples_per_object*len(folders_train), num_classes))
-
+    f_train = ['' for i in range(x_train.shape[0])]
     x_test = np.zeros((n_samples_per_object*len(folders_test), n_touches,) + enc_dims)
     y_test = np.zeros((n_samples_per_object*len(folders_test), num_classes))
+    f_test = ['' for i in range(x_test.shape[0])]
     i = 0
     for objID in folders_train:
         for n in range(n_samples_per_object):
@@ -237,6 +239,7 @@ def vt60_touchdata(width = 96, test_on=[{1},{1},{1},{1},{1},{1},{1},{1},{1},{1}]
             x = folder2tacvector(files_allowed, n_touches, centre, radius, width, enc, enc_dims)
             x_train[i] = x
             y_train[i] = keras.utils.to_categorical(objID // 10, num_classes)
+            f_train[i] = folder
             i += 1
     i = 0
     for objID in folders_test:
@@ -246,6 +249,7 @@ def vt60_touchdata(width = 96, test_on=[{1},{1},{1},{1},{1},{1},{1},{1},{1},{1}]
             x = folder2tacvector(files_allowed, n_touches, centre, radius, width, enc, enc_dims)
             x_test[i] = x
             y_test[i] = keras.utils.to_categorical(objID // 10, num_classes)
+            f_test[i] = folder
             i += 1
 
     print('x_train shape:', x_train.shape)
@@ -254,7 +258,7 @@ def vt60_touchdata(width = 96, test_on=[{1},{1},{1},{1},{1},{1},{1},{1},{1},{1}]
 
     x_train = x_train.astype('float32')
     x_test = x_test.astype('float32')
-    return x_train, y_train, x_test, y_test
+    return x_train, y_train, x_test, y_test, f_train, f_test
 
 def plot_recoded(encoder, x, width):
 
@@ -306,7 +310,7 @@ if __name__ == '__main__':
     recalc = False
     #from keras.callbacks import TensorBoard
     if recalc:
-        xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, n_touches=1, n_samples_per_object=60)
+        xtr, ytr, xte, yte, ftr, fte = vt60_touchdata(width=width, n_train=60, n_touches=1, n_samples_per_object=60)
         x1 = np.expand_dims(xtr[:, 0], -1)
         x2 = np.expand_dims(xte[:, 0], -1)
         encoder = m4_dcae(xtr.shape[2:] + (1,), filters)
@@ -320,18 +324,27 @@ if __name__ == '__main__':
     f = Model(inputs=encoder.input, outputs=encoder.get_layer('encoded').output)
     encode = lambda img: f.predict(np.expand_dims(np.expand_dims(img, axis=0), axis=-1))
     acc = np.zeros((21, 21))
-    for ntouches in [2,3,5,8,11,15,20]:
-    #ntouches = 3
-        xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, n_touches=ntouches, n_samples_per_object=20, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
 
-        cm = lambda a, b: confusion_matrix([np.argmax(h) for h in a], [np.argmax(h) for h in b])
+    # Just encode the database using m4_dcae
+    ntouches = 120
+    print('Encoding for ntouches = ' + str(ntouches))
+    xtr, ytr, xte, yte, ftr, fte = vt60_touchdata(width=width, test_on=[set() for i in range(10)],
+                                        n_train=120, n_touches=ntouches, n_samples_per_object=1,
+                                        enc=encode, enc_dims=f.layers[-1].output_shape[1:])
+    np.save('cache/vt60_touch_encoded_m4dcae', {'xtrain':xtr, 'ytrain':ytr, 'files_train':ftr})
 
-        for k in range(20):
-            m = m6_dense(input_shape=xtr.shape[1:])
-            m.fit(xtr, ytr, epochs=100, batch_size=50, validation_data=(xte, yte), verbose=0)
-            q = cm(yte, m.predict(xte))
-            print(k, '   #', np.trace(q) / sum(q.flatten()))
-            acc[ntouches, k] = np.trace(q) / sum(q.flatten())
-
-        print(k, '#### mu=', np.mean(acc[ntouches]), '  sd=', np.std(acc[ntouches]))
-    np.save('cache/accs_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w%d_ntouches_2to15' % (filters + (width,)), acc)
+    # for ntouches in [1,2,3,5,8,10,11,15,20]:
+    # #ntouches = 3
+    #     xtr, ytr, xte, yte = vt60_touchdata(width=width, n_train=60, n_touches=ntouches, n_samples_per_object=20, enc=encode, enc_dims=f.layers[-1].output_shape[1:])
+    #
+    #     cm = lambda a, b: confusion_matrix([np.argmax(h) for h in a], [np.argmax(h) for h in b])
+    #
+    #     for k in range(20):
+    #         m = m6_dense(input_shape=xtr.shape[1:])
+    #         m.fit(xtr, ytr, epochs=100, batch_size=50, validation_data=(xte, yte), verbose=0)
+    #         q = cm(yte, m.predict(xte))
+    #         print(k, '   #', np.trace(q) / sum(q.flatten()))
+    #         acc[ntouches, k] = np.trace(q) / sum(q.flatten())
+    #
+    #     print(k, '#### mu=', np.mean(acc[ntouches]), '  sd=', np.std(acc[ntouches]))
+    # np.save('cache/accs_c%d(2)_c%d(2)_c%d(2)_c%d(2)_enc_ntr_60_w%d_ntouches_2to15' % (filters + (width,)), acc)

@@ -3,11 +3,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io
 from PIL import Image, ImageDraw
-
+import re
 import tensorflow as tf
 import keras.backend.tensorflow_backend as ktf
 from keras.losses import categorical_crossentropy
-from keras.layers import Dropout, Flatten, Dense
+from keras.layers import Dropout, Flatten, Dense, Input
 from keras.models import Model, Sequential
 from keras.utils import to_categorical
 from keras.applications import VGG16
@@ -109,10 +109,40 @@ def m1_dense(inshape, optimiser='adadelta'):
     m.compile(optimizer=optimiser, loss=categorical_crossentropy, metrics=['accuracy'])
     return m
 
+def m2_deepfusion(vshape, tshape, optimiser='adadelta'):
+    x = Input(vshape)
+    x = Dense(256, activation='relu', input_shape=inshape)(x)
+    x = Dropout(0.25)(x)
+    x = Dense(32, activation='relu')(x)
+    x = Dropout(0.25)(x)
+
+def vt60_touch_data():
+    n_labels = 10
+    n_instances = 6
+    n_imgs = 120
+    tdata = np.load('cache/vt60_touch_encoded_m4dcae')
+    d = tdata[()] # unpack dict
+    n_obj, n_img = d['xtrain'].shape[:2]
+    encoded_dims = d['xtrain'].shape[2:]
+    v = np.zeros((n_labels,
+                  n_instances,
+                  n_imgs,) +
+                 encoded_dims)
+    for obj in range(n_obj):
+        f = d['files_train'][obj]
+        # '/home/tadeo/a2/code/data/vt60/touch/05_shoe/01/'
+        s = [m.start() for m in re.finditer('/', f)]
+        instance = int(f[s[-2]+1:s[-1]]) - 1
+        label = int(f[s[-3]+1:s[-3]+3]) - 1
+        v[label, instance] = d['xtrain'][obj]
+    return v
+
+
 from keras.callbacks import LambdaCallback
 
 if __name__ == '__main__':
     blotch = False
+    fusion = True
     # ktf.set_session(get_session()) # GPU vram use: grow as needed instead of hogging all at start
     # base = VGG16(weights='imagenet')
     # f_model = Model(inputs=base.input, outputs=base.get_layer('flatten').output)
@@ -120,10 +150,11 @@ if __name__ == '__main__':
     # v = vt60_vision_data(width = 224, encode=f, encoded_dims=(25088,), blotch=blotch)
     # np.save('cache/vision_vgg16_encoded' + '_blotched'*blotch, v)
     v = np.load('cache/vision_vgg16_encoded' + '_blotched'*blotch + '.npy')
-
+    t = vt60_touch_data()
     optimiser = 'adadelta'
     epochs = 50
     n_testmigs = 40
+
     for n_trainimgs in [40, 30, 20, 15, 10, 8, 5, 3, 2, 1]:
         print('Finetuning VGG16 using %s. Training with %d images.' % (optimiser, n_trainimgs))
         n_test = 10 * n_testmigs # number of test samples
@@ -132,22 +163,27 @@ if __name__ == '__main__':
         ytrue = np.zeros((6, n_test), dtype='uint8')
         vprob = np.zeros((6, n_test, 10)) # p(c|v)
         for test_instance in range(6):
-            xtr, ytr, xte, yte, xva, yva = split_by_instance(v, test_instance=test_instance, n_imgs_train=n_trainimgs)
+            if fusion:
+                xtr, ytr, xte, yte, xva, yva = split_by_instance(v, test_instance=test_instance,
+                                                                 n_imgs_train=n_trainimgs)
 
-            # train
-            m = m1_dense(xtr.shape[1:], optimiser)
-            cb = LambdaCallback(on_epoch_end= lambda epoch,logs: print('tr_acc = ', logs.get('acc'), ' # val_acc = ', logs.get('val_acc'))) # show progress
-            m.fit(xtr, ytr, batch_size=40, epochs=epochs, shuffle=True, verbose=0, validation_split=0.1, callbacks=[cb])
+            else:
+                xtr, ytr, xte, yte, xva, yva = split_by_instance(v, test_instance=test_instance, n_imgs_train=n_trainimgs)
 
-            # test & record
-            vp = m.predict(xte)
-            vprob[test_instance] = vp
-            ypred[test_instance] = np.argmax(vp, axis=1)
-            ytrue[test_instance] = np.argmax(yte, axis=1)
-            print()
-            print('Test accuracy for instance %d: %.3f' % (test_instance, np.mean(ypred[test_instance]==ytrue[test_instance])))
-            for i in range(n_test):
-                cm[ytrue[test_instance,i]*6 + test_instance, ypred[test_instance,i]] += 1
-            #np.save('cache/vision_vgg16_pred_true_instance_%d' % test_instance, (ypred, ytrue))
+                # train
+                m = m1_dense(xtr.shape[1:], optimiser)
+                cb = LambdaCallback(on_epoch_end= lambda epoch,logs: print('tr_acc = ', logs.get('acc'), ' # val_acc = ', logs.get('val_acc'))) # show progress
+                m.fit(xtr, ytr, batch_size=40, epochs=epochs, shuffle=True, verbose=0, validation_split=0.1, callbacks=[cb])
+
+                # test & record
+                vp = m.predict(xte)
+                vprob[test_instance] = vp
+                ypred[test_instance] = np.argmax(vp, axis=1)
+                ytrue[test_instance] = np.argmax(yte, axis=1)
+                print()
+                print('Test accuracy for instance %d: %.3f' % (test_instance, np.mean(ypred[test_instance]==ytrue[test_instance])))
+                for i in range(n_test):
+                    cm[ytrue[test_instance,i]*6 + test_instance, ypred[test_instance,i]] += 1
+                #np.save('cache/vision_vgg16_pred_true_instance_%d' % test_instance, (ypred, ytrue))
         scipy.io.savemat('cache/vision_vgg16_256_32_%s_epochs_%d_ntrainv_%d_pred_true_cm_pred_vprob%s.mat' % (optimiser, epochs, n_trainimgs, '_blotched'*blotch), {'ypred':ypred, 'ytrue':ytrue, 'cm':cm, 'vprob':vprob})
     #np.save('cache/vision_vgg16_cm', cm)
